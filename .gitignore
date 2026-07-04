@@ -1,0 +1,84 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments / local tooling
+.venv/
+venv/
+env/
+.env
+.env.*
+!.env.example
+*.local
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Logs and temporary files
+*.log
+*.tmp
+*.bak
+*.swp
+*.swo
+.cache/
+tmp/
+temp/
+
+# Project runtime data
+data/cache/
+data/db/
+data/pdf_cache/
+data/paperqa_agent_runs/
+data/metadata/web_runs/
+data/metadata/*_last.json
+data/metadata/chat_literature_last.json
+data/metadata/ask_literature_last.json
+data/metadata/ask_literature_langgraph_last.json
+
+# Large/generated metadata dumps
+data/metadata/*.jsonl
+data/metadata/*.sqlite
+data/metadata/*.db
+data/metadata/*.summary.json
+
+# Runtime memory and conversation history
+data/memory/*.jsonl
+data/memory/threads/
+data/memory/store/
+data/memory/global/
+
+# Keep placeholder files if we add them later
+!data/**/.gitkeep
+!data/**/README.md
+
+# Downloaded or generated papers
+*.pdf
+
+# Screenshots / local demo captures
+屏幕截图*.png
+Screenshot*.png
+*.webp
+
+# Nested third-party repository metadata; keep source files but not its Git DB.
+third_party/**/.git/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Node/front-end artifacts if added later
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
