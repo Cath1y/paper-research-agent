@@ -643,6 +643,18 @@ def _decision_from_payload(
         fallback.need_idea_generation,
     ) or "idea_generation" in task_types
 
+    paper_grounded_tasks = {
+        "literature_review",
+        "paper_deep_read",
+        "idea_generation",
+    }
+    if paper_grounded_tasks.intersection(task_types):
+        need_paper_search = True
+        need_pdf_reading = True
+    elif "learning_plan" in task_types and fallback.need_paper_search:
+        need_paper_search = True
+        need_pdf_reading = True
+
     need_web_search = _coerce_bool(
         payload.get("need_web_search"),
         fallback.need_web_search,
@@ -783,6 +795,21 @@ async def route_question(
                         "steps, next_step, need_web_search, "
                         "need_paper_search, need_pdf_reading, need_learning_plan, "
                         "need_idea_generation, answer_style, confidence, reasoning, direct_answer. "
+                        "The boolean fields need_web_search, need_paper_search, need_pdf_reading, "
+                        "need_learning_plan, and need_idea_generation are REQUIRED; always output "
+                        "each of them explicitly as true or false. Do not omit them. "
+                        "For literature review, paper deep reading, author/team research-direction "
+                        "questions, latest/recent work questions, representative-paper requests, "
+                        "or any question where the answer should be grounded in papers, prefer "
+                        "need_paper_search=true. Set need_pdf_reading=true when the user asks for "
+                        "paper-level analysis, evidence, comparison, deep reading, representative "
+                        "works, or a literature-backed conclusion. Set need_web_search=true when "
+                        "freshness, author/team identity, project pages, code, datasets, benchmarks, "
+                        "or current recommendations matter. Only set need_paper_search=false for "
+                        "quick conceptual questions or when compact memory clearly contains enough "
+                        "selected papers/links to answer the user's immediate follow-up. "
+                        "In reasoning, briefly explain why paper search/web search/PDF reading were "
+                        "enabled or disabled. "
                         "need_pdf_reading is only a planner hint for reporting; ExpertResearchAgent "
                         "owns the final decision of whether to call internal PaperQA reader tools. "
                         "task_type is the primary label. task_types is an array of all applicable labels. "

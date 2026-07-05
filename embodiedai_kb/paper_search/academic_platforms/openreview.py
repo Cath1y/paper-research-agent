@@ -13,9 +13,22 @@ class OpenReviewSearcher(PaperSource):
     source_name = "openreview"
     base_url = "https://api2.openreview.net/notes/search"
 
-    def search(self, query: str, max_results: int = 10, **_: object) -> list[AcademicPaper]:
+    def search(
+        self,
+        query: str,
+        max_results: int = 10,
+        timeout: float = 30.0,
+        retries: int = 2,
+        request_delay: float = 1.0,
+        **_: object,
+    ) -> list[AcademicPaper]:
         params = {"term": query, "limit": max(1, min(max_results, 100))}
-        payload = open_json(f"{self.base_url}?{urllib.parse.urlencode(params)}", retries=2)
+        payload = open_json(
+            f"{self.base_url}?{urllib.parse.urlencode(params)}",
+            timeout=timeout,
+            retries=retries,
+            delay=request_delay,
+        )
         papers: list[AcademicPaper] = []
         for note in payload.get("notes", []) or []:
             paper = self._parse_note(note)

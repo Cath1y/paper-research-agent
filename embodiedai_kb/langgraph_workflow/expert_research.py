@@ -36,6 +36,63 @@ PAPERQA_READING_TASKS = {
 }
 
 
+def _triage_feedback_for_search(
+    *,
+    triage_trace: dict[str, Any],
+    selected: list[SelectedPaper],
+    args: Any,
+) -> tuple[bool, str]:
+    """Convert PaperTriageAgent's judgment into a follow-up search instruction."""
+
+    selected_count = len(selected)
+    min_selected = int(getattr(args, "paper_search_triage_min_selected", 1) or 1)
+    sufficient_for_reading = triage_trace.get("sufficient_for_reading")
+    requires_followup_search = triage_trace.get("requires_followup_search")
+    if sufficient_for_reading is True and selected_count > 0:
+        return False, ""
+    if requires_followup_search is False and selected_count >= min_selected:
+        return False, ""
+    if sufficient_for_reading is not False and selected_count >= min_selected:
+        return False, ""
+
+    rationale = str(triage_trace.get("rationale") or "").strip()
+    coverage_notes = triage_trace.get("coverage_notes") or []
+    rejected_reasons = triage_trace.get("rejected_reasons") or {}
+    screen_records = triage_trace.get("screen_records") or []
+    top_rejections: list[str] = []
+    if isinstance(rejected_reasons, dict):
+        for key, reason in list(rejected_reasons.items())[:8]:
+            top_rejections.append(f"{key}: {reason}")
+    if not top_rejections and isinstance(screen_records, list):
+        for record in screen_records[:8]:
+            key = record.get("key") or record.get("paper_key") or "candidate"
+            reason = record.get("reason") or ""
+            score = record.get("final_score")
+            top_rejections.append(f"{key}: score={score}; {reason}")
+
+    feedback_parts = [
+        "PaperTriageAgent judged the current paper candidates insufficient.",
+        f"selected_count={selected_count}; required_min_selected={min_selected}.",
+        f"sufficient_for_reading={sufficient_for_reading}; "
+        f"requires_followup_search={requires_followup_search}.",
+    ]
+    if rationale:
+        feedback_parts.append(f"Triage rationale: {rationale}")
+    if coverage_notes:
+        feedback_parts.append(
+            "Coverage notes: "
+            + "; ".join(str(item).strip() for item in coverage_notes[:6] if str(item).strip())
+        )
+    if top_rejections:
+        feedback_parts.append("Representative rejection reasons: " + "; ".join(top_rejections[:8]))
+    feedback_parts.append(
+        "Next search should address these gaps directly. Prefer official/profile/"
+        "publication-page evidence, exact paper-title lookup, and PDF-backed papers. "
+        "Avoid repeating broad queries that only produced same-name or weakly related papers."
+    )
+    return True, "\n".join(feedback_parts)
+
+
 def format_web_evidence(items: list[dict[str, Any]], limit: int = 6) -> str:
     lines: list[str] = []
     for idx, item in enumerate(items[:limit], start=1):
@@ -511,59 +568,6 @@ async def run_expert_research_agent(
             }
         )
 
-    if route.get("need_paper_search", True) and not memory_papers_sufficient:
-        emit_progress(
-            args,
-            "PaperSearchAgent",
-            "start",
-            research_queries=len(queries),
-        )
-        candidates, metadata_selected, paper_search_web_evidence, paper_search_trace = (
-            await run_paper_search_agent(
-                question=question,
-                queries=queries,
-                research_plan=research_plan,
-                planning_web_evidence=planning_web_evidence,
-                args=args,
-            )
-        )
-        emit_progress(
-            args,
-            "PaperSearchAgent",
-            "done",
-            candidates=paper_search_trace.get("candidate_count"),
-            workflow_candidates=paper_search_trace.get("workflow_candidate_count"),
-            metadata_candidates=paper_search_trace.get("metadata_candidate_count"),
-            stop=paper_search_trace.get("stop_reason"),
-        )
-        academic_paper_search_trace = paper_search_trace
-        academic_selected = _selected_from_search_results(candidates)
-        if paper_search_web_evidence:
-            seen_urls = {str(item.get("url") or "") for item in web_evidence}
-            for item in paper_search_web_evidence:
-                url = str(item.get("url") or "")
-                if url and url not in seen_urls:
-                    seen_urls.add(url)
-                    web_evidence.append(item)
-        expert_trace.append(
-            {
-                "tool": "paper_search_agent",
-                "task_signals": (paper_search_trace.get("query_analysis") or {}).get("task_signals"),
-                "authors": (paper_search_trace.get("query_analysis") or {}).get("authors"),
-                "called_tools": (paper_search_trace.get("workflow_trace") or {}).get("called_tools"),
-                "candidate_count": paper_search_trace.get("candidate_count"),
-                "workflow_candidate_count": paper_search_trace.get("workflow_candidate_count"),
-                "metadata_candidate_count": paper_search_trace.get("metadata_candidate_count"),
-                "selected_count": paper_search_trace.get("selected_count"),
-            }
-        )
-        web_paper_discovery_trace = {
-            "mode": "removed_from_main_chain",
-            "reason": "heuristic web-page PDF extraction was replaced by PaperSearchAgent workflows",
-            "candidate_count": 0,
-            "selected_count": 0,
-        }
-
     triage_candidates = [
         *memory_selected,
         *_selected_from_search_results(candidates),
@@ -587,39 +591,183 @@ async def run_expert_research_agent(
             }
         )
     elif route.get("need_paper_search", True):
-        emit_progress(
-            args,
-            "PaperTriageAgent",
-            "start",
-            candidates=len(triage_candidates),
+        max_search_triage_rounds = max(
+            1,
+            int(getattr(args, "paper_search_triage_rounds", 2) or 2),
         )
-        selected, triage_trace = await triage_papers_for_reading(
-            question=question,
-            candidates=triage_candidates,
-            web_evidence=web_evidence,
-            planning_web_evidence=planning_web_evidence,
-            research_plan=research_plan,
-            args=args,
-        )
-        emit_progress(
-            args,
-            "PaperTriageAgent",
-            "done",
-            selected=triage_trace.get("selected_count"),
-            mode=triage_trace.get("mode"),
-            error=triage_trace.get("error"),
-        )
-        expert_trace.append(
-            {
-                "tool": "paper_triage_agent",
-                "mode": triage_trace.get("mode"),
-                "candidate_count": triage_trace.get("candidate_count"),
-                "selected_count": triage_trace.get("selected_count"),
-                "model": triage_trace.get("model"),
-                "rationale": triage_trace.get("rationale"),
-                "error": triage_trace.get("error"),
+        current_queries = list(queries)
+        current_research_plan = list(research_plan)
+        feedback_history: list[dict[str, Any]] = []
+        seen_candidate_keys: set[str] = set()
+        all_candidates: list[SearchResult] = []
+
+        for round_index in range(1, max_search_triage_rounds + 1):
+            emit_progress(
+                args,
+                "PaperSearchAgent",
+                "start",
+                round=round_index,
+                research_queries=len(current_queries),
+            )
+            (
+                round_candidates,
+                metadata_selected,
+                paper_search_web_evidence,
+                round_paper_search_trace,
+            ) = await run_paper_search_agent(
+                question=question,
+                queries=current_queries,
+                research_plan=current_research_plan,
+                planning_web_evidence=planning_web_evidence,
+                args=args,
+            )
+            paper_search_trace = round_paper_search_trace
+            emit_progress(
+                args,
+                "PaperSearchAgent",
+                "done",
+                round=round_index,
+                candidates=paper_search_trace.get("candidate_count"),
+                workflow_candidates=paper_search_trace.get("workflow_candidate_count"),
+                metadata_candidates=paper_search_trace.get("metadata_candidate_count"),
+                stop=paper_search_trace.get("stop_reason"),
+            )
+            academic_paper_search_trace = paper_search_trace
+            if paper_search_web_evidence:
+                seen_urls = {str(item.get("url") or "") for item in web_evidence}
+                for item in paper_search_web_evidence:
+                    url = str(item.get("url") or "")
+                    if url and url not in seen_urls:
+                        seen_urls.add(url)
+                        web_evidence.append(item)
+
+            for candidate in round_candidates:
+                key = (
+                    candidate.doi
+                    or candidate.arxiv_id
+                    or candidate.pdf_url
+                    or candidate.paper_url
+                    or candidate.title
+                )
+                key = " ".join(str(key or "").lower().split())
+                if key and key not in seen_candidate_keys:
+                    seen_candidate_keys.add(key)
+                    all_candidates.append(candidate)
+            candidates = all_candidates
+            academic_selected = _selected_from_search_results(candidates)
+            triage_candidates = [
+                *memory_selected,
+                *_selected_from_search_results(candidates),
+            ]
+            expert_trace.append(
+                {
+                    "tool": "paper_search_agent",
+                    "round": round_index,
+                    "task_signals": (paper_search_trace.get("query_analysis") or {}).get("task_signals"),
+                    "authors": (paper_search_trace.get("query_analysis") or {}).get("authors"),
+                    "called_tools": (paper_search_trace.get("workflow_trace") or {}).get("called_tools"),
+                    "candidate_count": paper_search_trace.get("candidate_count"),
+                    "accumulated_candidate_count": len(candidates),
+                    "workflow_candidate_count": paper_search_trace.get("workflow_candidate_count"),
+                    "metadata_candidate_count": paper_search_trace.get("metadata_candidate_count"),
+                    "selected_count": paper_search_trace.get("selected_count"),
+                }
+            )
+
+            emit_progress(
+                args,
+                "PaperTriageAgent",
+                "start",
+                round=round_index,
+                candidates=len(triage_candidates),
+            )
+            selected, triage_trace = await triage_papers_for_reading(
+                question=question,
+                candidates=triage_candidates,
+                web_evidence=web_evidence,
+                planning_web_evidence=planning_web_evidence,
+                research_plan=current_research_plan,
+                args=args,
+            )
+            emit_progress(
+                args,
+                "PaperTriageAgent",
+                "done",
+                round=round_index,
+                selected=triage_trace.get("selected_count"),
+                mode=triage_trace.get("mode"),
+                error=triage_trace.get("error"),
+            )
+            expert_trace.append(
+                {
+                    "tool": "paper_triage_agent",
+                    "round": round_index,
+                    "mode": triage_trace.get("mode"),
+                    "candidate_count": triage_trace.get("candidate_count"),
+                    "selected_count": triage_trace.get("selected_count"),
+                    "model": triage_trace.get("model"),
+                    "sufficient_for_reading": triage_trace.get("sufficient_for_reading"),
+                    "requires_followup_search": triage_trace.get("requires_followup_search"),
+                    "rationale": triage_trace.get("rationale"),
+                    "coverage_notes": triage_trace.get("coverage_notes"),
+                    "error": triage_trace.get("error"),
+                }
+            )
+            should_continue, feedback = _triage_feedback_for_search(
+                triage_trace=triage_trace,
+                selected=selected,
+                args=args,
+            )
+            feedback_history.append(
+                {
+                    "round": round_index,
+                    "should_continue": should_continue,
+                    "feedback": feedback,
+                    "selected_count": len(selected),
+                }
+            )
+            if not should_continue or round_index >= max_search_triage_rounds:
+                break
+
+            emit_progress(
+                args,
+                "PaperSearchAgent",
+                "triage feedback",
+                round=round_index,
+                feedback=shorten(feedback, width=160, placeholder="..."),
+            )
+            feedback_query = (
+                "Follow-up paper search based on PaperTriageAgent feedback: "
+                + feedback
+            )
+            current_queries = [feedback_query, *current_queries]
+            current_research_plan = [
+                {
+                    "agent": "PaperTriageAgentFeedback",
+                    "research_question": feedback,
+                    "depends_on": "paper_search_and_triage",
+                },
+                *current_research_plan,
+            ]
+
+        if paper_search_trace:
+            paper_search_trace = {
+                **paper_search_trace,
+                "search_triage_loop": {
+                    "mode": "paper_search_triage_feedback_loop",
+                    "round_count": len(feedback_history),
+                    "max_rounds": max_search_triage_rounds,
+                    "feedback_history": feedback_history,
+                    "final_selected_count": len(selected),
+                },
             }
-        )
+            academic_paper_search_trace = paper_search_trace
+        web_paper_discovery_trace = {
+            "mode": "removed_from_main_chain",
+            "reason": "heuristic web-page PDF extraction was replaced by PaperSearchAgent workflows",
+            "candidate_count": 0,
+            "selected_count": 0,
+        }
     else:
         selected = _merge_selected_papers(
             memory_selected=memory_selected,

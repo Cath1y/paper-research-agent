@@ -44,7 +44,15 @@ class OpenAlexSearcher(PaperSource):
     source_name = "openalex"
     base_url = "https://api.openalex.org/works"
 
-    def search(self, query: str, max_results: int = 10, **_: object) -> list[AcademicPaper]:
+    def search(
+        self,
+        query: str,
+        max_results: int = 10,
+        timeout: float = 30.0,
+        retries: int = 2,
+        request_delay: float = 1.0,
+        **_: object,
+    ) -> list[AcademicPaper]:
         params = {
             "search": query,
             "per-page": max(1, min(max_results, 200)),
@@ -54,10 +62,22 @@ class OpenAlexSearcher(PaperSource):
         mailto = env_first("PAPER_SEARCH_MCP_OPENALEX_MAILTO", "OPENALEX_MAILTO")
         if mailto:
             params["mailto"] = mailto
-        payload = open_json(f"{self.base_url}?{urllib.parse.urlencode(params)}", retries=2)
+        payload = open_json(
+            f"{self.base_url}?{urllib.parse.urlencode(params)}",
+            timeout=timeout,
+            retries=retries,
+            delay=request_delay,
+        )
         return [paper for item in payload.get("results", []) if (paper := self._parse_item(item))]
 
-    def lookup_doi(self, doi: str) -> AcademicPaper | None:
+    def lookup_doi(
+        self,
+        doi: str,
+        *,
+        timeout: float = 30.0,
+        retries: int = 1,
+        request_delay: float = 1.0,
+    ) -> AcademicPaper | None:
         clean = doi.strip()
         if not clean:
             return None
@@ -65,7 +85,12 @@ class OpenAlexSearcher(PaperSource):
         mailto = env_first("PAPER_SEARCH_MCP_OPENALEX_MAILTO", "OPENALEX_MAILTO")
         if mailto:
             params["mailto"] = mailto
-        payload = open_json(f"{self.base_url}?{urllib.parse.urlencode(params)}", retries=1)
+        payload = open_json(
+            f"{self.base_url}?{urllib.parse.urlencode(params)}",
+            timeout=timeout,
+            retries=retries,
+            delay=request_delay,
+        )
         for item in payload.get("results", []):
             paper = self._parse_item(item)
             if paper:

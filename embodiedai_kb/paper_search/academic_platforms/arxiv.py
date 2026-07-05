@@ -40,6 +40,9 @@ class ArxivSearcher(PaperSource):
         max_results: int = 10,
         sort_by: str = "relevance",
         sort_order: str = "descending",
+        timeout: float = 30.0,
+        retries: int = 2,
+        request_delay: float = 1.0,
         **_: object,
     ) -> list[AcademicPaper]:
         params = {
@@ -48,7 +51,12 @@ class ArxivSearcher(PaperSource):
             "sortBy": sort_by,
             "sortOrder": sort_order,
         }
-        payload = open_bytes(f"{self.base_url}?{urllib.parse.urlencode(params)}")
+        payload = open_bytes(
+            f"{self.base_url}?{urllib.parse.urlencode(params)}",
+            timeout=timeout,
+            retries=retries,
+            delay=request_delay,
+        )
         root = ET.fromstring(payload)
         papers: list[AcademicPaper] = []
         for entry in root.findall("a:entry", ATOM_NS):

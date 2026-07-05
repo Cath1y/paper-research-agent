@@ -967,6 +967,20 @@ def _append_value(command: list[str], flag: str, value: Any) -> None:
         command.extend([flag, text])
 
 
+def _process_output_text(value: Any, *, limit: int = 20000) -> str:
+    """Convert subprocess output to JSON-safe text."""
+
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        text = value.decode("utf-8", errors="replace")
+    else:
+        text = str(value)
+    if len(text) > limit:
+        return text[-limit:]
+    return text
+
+
 def _safe_thread_id(value: Any) -> str:
     thread_id = re.sub(r"[^\w_.-]+", "_", str(value or "web_demo")).strip("._-")
     return thread_id or "web_demo"
@@ -1030,7 +1044,11 @@ def _list_threads() -> list[dict[str, Any]]:
     return [_thread_summary(path) for path in paths]
 
 
-def _build_command(payload: dict[str, Any], run_json: Path) -> tuple[list[str], float]:
+def _build_command(
+    payload: dict[str, Any],
+    run_json: Path,
+    paper_search_log_json: Path | None = None,
+) -> tuple[list[str], float]:
     question = str(payload.get("question") or "").strip()
     if not question:
         raise ValueError("question is required")
@@ -1044,6 +1062,8 @@ def _build_command(payload: dict[str, Any], run_json: Path) -> tuple[list[str], 
         "--thread-id",
         str(payload.get("thread_id") or "web_demo"),
     ]
+    if paper_search_log_json is not None:
+        command.extend(["--paper-search-log-json", str(paper_search_log_json)])
     _bool_flag(command, payload.get("frontier_enabled", True) is not False, "--include-frontier")
     _bool_flag(command, bool(payload.get("include_arxiv")), "--include-arxiv")
     _bool_flag(command, bool(payload.get("dry_run")), "--dry-run")
@@ -1104,9 +1124,10 @@ def create_app() -> Flask:
         payload = request.get_json(force=True, silent=True) or {}
         run_id = uuid.uuid4().hex[:12]
         run_json = RUN_DIR / f"{run_id}.json"
+        paper_search_log_json = ROOT / "data/metadata/paper_search_logs" / f"{run_id}.json"
         RUN_DIR.mkdir(parents=True, exist_ok=True)
         try:
-            command, timeout = _build_command(payload, run_json)
+            command, timeout = _build_command(payload, run_json, paper_search_log_json)
         except Exception as exc:
             return jsonify({"ok": False, "error": str(exc)}), 400
 
@@ -1123,15 +1144,18 @@ def create_app() -> Flask:
                 env=os.environ.copy(),
             )
         except subprocess.TimeoutExpired as exc:
+            elapsed = __import__("time").monotonic() - started
             return (
                 jsonify(
                     {
                         "ok": False,
                         "error": f"workflow timed out after {timeout:.0f}s",
-                        "stdout": exc.stdout,
-                        "stderr": exc.stderr,
+                        "elapsed_seconds": elapsed,
+                        "stdout": _process_output_text(exc.stdout),
+                        "stderr": _process_output_text(exc.stderr),
                         "command": command,
                         "run_json": str(run_json),
+                        "paper_search_log_json": str(paper_search_log_json),
                     }
                 ),
                 504,
@@ -1155,6 +1179,7 @@ def create_app() -> Flask:
                     "elapsed_seconds": elapsed,
                     "command": command,
                     "run_json": str(run_json),
+                    "paper_search_log_json": str(paper_search_log_json),
                     "state": state,
                     "stdout": completed.stdout,
                     "stderr": completed.stderr,

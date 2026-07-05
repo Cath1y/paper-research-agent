@@ -409,7 +409,7 @@ def _paper_search_plan_from_payload(
     )
 
 
-def _candidate_snapshot(candidates: list[SearchResult], limit: int = 12) -> list[dict[str, Any]]:
+def _candidate_snapshot(candidates: list[SearchResult], limit: int = 20) -> list[dict[str, Any]]:
     return [
         {
             "title": item.title,
@@ -419,8 +419,25 @@ def _candidate_snapshot(candidates: list[SearchResult], limit: int = 12) -> list
             "pdf": bool(item.pdf_url),
             "url": item.paper_url or item.pdf_url,
             "sources": item.sources,
+            "relevance_reasons": item.relevance_reasons[:3],
         }
         for item in candidates[:limit]
+    ]
+
+
+def _web_evidence_snapshot(items: list[dict[str, Any]], limit: int = 8) -> list[dict[str, str]]:
+    return [
+        {
+            "title": str(item.get("title") or "")[:180],
+            "url": str(item.get("url") or ""),
+            "query": str(item.get("query") or "")[:180],
+            "snippet": shorten(
+                re.sub(r"\s+", " ", str(item.get("snippet") or "")).strip(),
+                width=500,
+                placeholder="...",
+            ),
+        }
+        for item in items[:limit]
     ]
 
 
@@ -436,6 +453,7 @@ def _search_loop_observation(
         "pdf_candidate_count": len(pdf_candidates),
         "web_evidence_count": len(web_evidence),
         "candidate_snapshot": _candidate_snapshot(candidates),
+        "web_evidence_snapshot": _web_evidence_snapshot(web_evidence),
         "recent_iteration_summaries": [
             {
                 "iteration": item.get("iteration"),
@@ -469,6 +487,12 @@ def _should_refine_paper_search(
     if len(candidates) < min_total:
         return True, f"total_candidates_below_target:{len(candidates)}<{min_total}"
     return False, "candidate_targets_met"
+
+
+def _paper_search_can_reflect(args: Any) -> bool:
+    return bool(_paper_search_model(args)) and not bool(
+        getattr(args, "disable_paper_search_reflection", False)
+    )
 
 
 async def analyze_paper_search_query(
@@ -518,19 +542,49 @@ async def analyze_paper_search_query(
                         "dblp_profile, openreview_profile, project_page. "
                         "Keep the plan compact: at most 8 search_queries, at most 2 queries per tool, "
                         "and only include tools that are useful for this request. "
+                        "Do not reduce an author/person/team request to name-only searches. Name-only "
+                        "queries are useful for recall, but they are rarely enough for disambiguation. "
+                        "Also search for publication lists, official profile pages, lab/project pages, "
+                        "recent paper titles, coauthors, venue/year combinations, and topic phrases "
+                        "from the user question or research plan. A good author search plan usually "
+                        "mixes: profile/publication-page lookup, broad author recall, topic-constrained "
+                        "author recall, and exact-title lookup once titles are known. "
+                        "Use each platform for what it is good at: web_search/author_homepage/"
+                        "publication_page/google_scholar_profile/dblp_profile should discover identity "
+                        "evidence, publication lists, paper titles, project pages, and affiliation clues; "
+                        "arxiv_search should retrieve PDFs from broad author/topic or exact-title "
+                        "queries; openalex_search can use author name plus institution/topic/year terms "
+                        "for metadata-style disambiguation; openreview_search should use venue/topic/"
+                        "author combinations for ICLR/NeurIPS/CVPR-style submissions; crossref_search "
+                        "should mostly use exact paper titles or DOI-like lookups. "
                         "Generate arXiv queries using arXiv API syntax only: au:, ti:, abs:, "
                         "all:, cat:, co:, AND, OR, ANDNOT, and quoted phrases. "
-                        "For arXiv author requests, combine author and topic/title constraints, for example "
-                        "au:\"Jane Doe\" AND all:\"robot learning\" or au:\"Jane Doe\" AND ti:\"example paper\". "
+                        "Important platform rule: arXiv search does not expose a reliable affiliation "
+                        "or institution field. For arXiv author requests, do not use university, lab, "
+                        "department, city, or affiliation terms such as SJTU, Shanghai Jiao Tong, PKU, "
+                        "MIT, Stanford, school names, or Chinese institution names as mandatory all: "
+                        "filters. Use profile/homepage/scholar/DBLP/OpenAlex-style searches to "
+                        "disambiguate identity, then use arXiv for broad author/topic recall or exact "
+                        "title lookup. Good arXiv queries are broad author queries, author+topic "
+                        "queries, or exact title queries, for example au:\"Jane Doe\", "
+                        "au:\"Jane Doe\" AND all:\"robot learning\", or ti:\"Exact Paper Title\". "
+                        "For Chinese names, arXiv queries should use romanized English names and English "
+                        "title/topic terms; use web/profile tools for Chinese-name and affiliation "
+                        "disambiguation. If an author name is common, prefer broad arXiv recall and let "
+                        "the triage step filter by identity evidence; do not over-constrain arXiv with "
+                        "institution terms. "
                         "Do not put web-only terms like Google Scholar, homepage, site:, URL fragments, "
-                        "or institution pages in arxiv_search/openalex_search/openreview_search/"
-                        "crossref_search queries. Use google_scholar_profile only for web search "
-                        "queries that locate a scholar profile; do not assume direct Google Scholar "
-                        "API access. Use author_homepage/publication_page/dblp_profile/openreview_profile "
-                        "when identity disambiguation or author publication lists matter. Treat "
-                        "crossref_search as a fallback for exact titles or DOI-like lookup, not as a "
-                        "primary broad author/topic search source. For topic surveys, combine academic "
-                        "database queries with broad web/project-page queries."
+                        "or URL fragments in arxiv_search/openalex_search/openreview_search/"
+                        "crossref_search queries. Institution terms are useful in author_homepage, "
+                        "publication_page, google_scholar_profile, dblp_profile, openalex_search, and "
+                        "web_search queries, but should not be mandatory arXiv filters. Use "
+                        "google_scholar_profile only for web search queries that locate a scholar "
+                        "profile; do not assume direct Google Scholar API access. Use "
+                        "author_homepage/publication_page/dblp_profile/openreview_profile when identity "
+                        "disambiguation or author publication lists matter. Treat crossref_search as a "
+                        "fallback for exact titles or DOI-like lookup, not as a primary broad "
+                        "author/topic search source. For topic surveys, combine academic database "
+                        "queries with broad web/project-page queries."
                     ),
                 },
                 {
@@ -555,10 +609,10 @@ async def analyze_paper_search_query(
                         '  "content_query": "recent publications and research themes",\n'
                         '  "search_queries": ["Jane Doe robot learning recent publications", "Jane Doe embodied AI"],\n'
                         '  "tool_queries": {\n'
-                        '    "arxiv_search": ["au:\\"Jane Doe\\" AND all:\\"robot learning\\"", "au:\\"Jane Doe\\" AND all:embodied"],\n'
-                        '    "openalex_search": ["Jane Doe robot learning", "Jane Doe embodied AI"],\n'
+                        '    "arxiv_search": ["au:\\"Jane Doe\\"", "au:\\"Jane Doe\\" AND all:\\"robot learning\\""],\n'
+                        '    "openalex_search": ["Jane Doe University robot learning", "Jane Doe embodied AI recent publications"],\n'
                         '    "openreview_search": ["Jane Doe ICLR robot learning"],\n'
-                        '    "crossref_search": ["Jane Doe university robot learning"],\n'
+                        '    "crossref_search": ["Exact Paper Title"],\n'
                         '    "author_homepage": ["Jane Doe university homepage publications"],\n'
                         '    "publication_page": ["Jane Doe publications"],\n'
                         '    "google_scholar_profile": ["Jane Doe Google Scholar"],\n'
@@ -633,21 +687,39 @@ async def plan_next_paper_search_iteration(
                     "role": "system",
                     "content": (
                         "You are PaperSearchAgent.SearchLoopPlanner. You inspect paper-search "
-                        "results and decide whether one more targeted search round is needed. "
+                        "results like a lightweight PaSa-style selector/reflection agent and decide "
+                        "whether one more targeted search round is needed. "
                         "Return exactly one JSON object. Do not use markdown or comments. "
                         "Only propose NEW tool queries that were not already executed. If the "
                         "existing candidates are enough or you cannot improve the search, return "
                         "continue_search=false and an empty tool_queries object. "
+                        "Be practical rather than perfectionist: stop when there are several credible "
+                        "PDF-backed candidates that can answer the user's question. Continue only when "
+                        "there is a clear gap, such as no useful PDFs, wrong/same-name identity risk, "
+                        "missing official/profile/publication-page evidence, missing exact paper titles, "
+                        "or candidates that do not cover the requested topic/year. "
                         "Keep follow-up compact: at most 2 tools and at most 2 queries per tool. "
                         "Available tools: arxiv_search, openalex_search, openreview_search, "
                         "crossref_search, web_search, author_homepage, publication_page, "
                         "google_scholar_profile, dblp_profile, openreview_profile, project_page. "
+                        "Do not keep repeating name-only searches after triage reports weak or ambiguous "
+                        "candidates. Use the feedback to search for missing evidence: official profile/"
+                        "publication pages, exact paper titles, coauthors, venue/year terms, project pages, "
+                        "or topic phrases that connect the papers to the user's question. "
                         "Use profile/homepage tools for author identity and publication-list gaps; "
                         "use academic tools for title/topic/author paper lookup. Use Google Scholar "
-                        "only as a web/profile query, not as a direct API. Avoid repeating broad "
-                        "queries that already failed; prefer precise names, paper titles, venues, "
-                        "years, official pages, or disambiguating institutions. Use crossref_search "
-                        "only for exact title/DOI-style fallback queries."
+                        "only as a web/profile query, not as a direct API. arXiv has no reliable "
+                        "affiliation field: do not repair author-disambiguation failures by adding "
+                        "university/lab/city/institution terms as mandatory arXiv all: filters. For "
+                        "arXiv, prefer broad author recall, author+topic recall, or exact paper-title "
+                        "queries learned from profile/web results. For Chinese names, use romanized "
+                        "English arXiv queries and use web/profile tools for Chinese and affiliation "
+                        "disambiguation. Avoid repeating broad queries that already failed; prefer "
+                        "precise names, paper titles, venues, years, official pages, or disambiguating "
+                        "institutions in profile/web/OpenAlex-style tools. Use crossref_search only "
+                        "for exact title/DOI-style fallback queries. For topic surveys, if the current "
+                        "candidate set already has enough diverse recent PDFs, stop; do not keep "
+                        "searching just to be exhaustive."
                     ),
                 },
                 {
@@ -658,6 +730,7 @@ async def plan_next_paper_search_iteration(
                         "Return JSON schema:\n"
                         "{\n"
                         '  "continue_search": true,\n'
+                        '  "sufficient_reason": "why current papers are or are not enough",\n'
                         '  "task_signals": {"needs_author_disambiguation": true},\n'
                         '  "authors": ["..."],\n'
                         '  "content_query": "what gap this round addresses",\n'
@@ -665,7 +738,7 @@ async def plan_next_paper_search_iteration(
                         '  "tool_queries": {\n'
                         '    "author_homepage": ["..."],\n'
                         '    "publication_page": ["..."],\n'
-                        '    "arxiv_search": ["au:\\"...\\" AND all:\\"...\\""]\n'
+                        '    "arxiv_search": ["au:\\"...\\"", "ti:\\"Exact Paper Title\\""]\n'
                         "  },\n"
                         '  "reasoning": "why these new searches should fix the gap"\n'
                         "}"
@@ -678,6 +751,7 @@ async def plan_next_paper_search_iteration(
                 "mode": "llm_stop",
                 "model": model,
                 "reasoning": str(payload.get("reasoning") or ""),
+                "sufficient_reason": str(payload.get("sufficient_reason") or ""),
             }
         plan = _paper_search_plan_from_payload(payload, question=question, queries=queries)
 
@@ -738,7 +812,11 @@ def _profile_url_priority(url: str) -> int:
     path = parsed.path.lower()
     if path.endswith(".pdf") or ".pdf" in path:
         return 100
+    if "scholar.google" in host:
+        return -3
     if any(marker in path for marker in ("publication", "publications", "papers")):
+        return -2
+    if any(marker in path for marker in ("homepage", "personal", "people")):
         return -1
     if any(marker in path for marker in ("faculty", "people", "profile", "teacher", "jiaoshi")):
         return 0
@@ -746,10 +824,8 @@ def _profile_url_priority(url: str) -> int:
         return 1
     if "dblp" in host or "orcid" in host:
         return 2
-    if "github.io" in host or ".edu" in host or ".ac." in host:
+    if "github.io" in host or host.endswith(".me") or ".edu" in host or ".ac." in host:
         return 3
-    if "scholar.google" in host:
-        return 4
     if "github.com" in host:
         return 7
     return 5
@@ -761,8 +837,16 @@ def _interesting_profile_links(base_url: str, links: str, limit: int = 8) -> lis
     candidates: list[str] = []
     seen: set[str] = set()
     patterns = (
+        "个人主页",
+        "主页",
+        "个人网站",
+        "homepage",
+        "home page",
+        "personal website",
+        "website",
         "publication",
         "publications",
+        "selected publications",
         "papers",
         "selected-publications",
         "research",
@@ -772,6 +856,7 @@ def _interesting_profile_links(base_url: str, links: str, limit: int = 8) -> lis
         "openreview.net/profile",
         "arxiv.org/a/",
         "orcid",
+        "semantic scholar",
     )
     for raw_line in links.splitlines():
         line = raw_line.strip()
@@ -783,10 +868,31 @@ def _interesting_profile_links(base_url: str, links: str, limit: int = 8) -> lis
         if not href or href.startswith(("mailto:", "javascript:")):
             continue
         combined = f"{text} {href}".lower()
-        if not any(pattern in combined for pattern in patterns):
-            continue
         url = urllib.parse.urljoin(base_url, href)
-        if url.lower().endswith((".jpg", ".jpeg", ".png", ".gif", ".svg", ".zip")):
+        parsed = urllib.parse.urlparse(url)
+        host = parsed.netloc.lower()
+        base_host = urllib.parse.urlparse(base_url).netloc.lower()
+        external_personal_site = (
+            host
+            and host != base_host
+            and not any(
+                blocked in host
+                for blocked in (
+                    "youtube.",
+                    "twitter.",
+                    "x.com",
+                    "facebook.",
+                    "linkedin.",
+                    "bilibili.",
+                    "zhihu.",
+                    "wechat.",
+                )
+            )
+            and any(marker in combined for marker in ("主页", "homepage", "website", "个人"))
+        )
+        if not any(pattern in combined for pattern in patterns) and not external_personal_site:
+            continue
+        if url.lower().endswith((".jpg", ".jpeg", ".png", ".gif", ".svg", ".zip", ".mp4")):
             continue
         if url not in seen:
             seen.add(url)
@@ -1168,6 +1274,8 @@ async def _run_paper_search_iteration(
         "academic connectors start",
         iteration=iteration,
         sources=",".join(getattr(args, "academic_paper_sources", "").split(",")),
+        timeout=getattr(args, "academic_paper_search_timeout", None),
+        request_timeout=getattr(args, "academic_paper_request_timeout", None),
     )
     academic_results, academic_trace = await _academic_workflow(
         question=question,
@@ -1331,44 +1439,69 @@ async def run_paper_search_agent(
             pdf_candidates=len([item for item in workflow_results if item.pdf_url]),
         )
 
-        should_refine, stop_reason = _should_refine_paper_search(
-            candidates=workflow_results,
-            iteration=iteration,
-            max_iterations=max_iterations,
-            args=args,
-        )
-        if not should_refine:
+        if iteration >= max_iterations:
+            stop_reason = "max_iterations_reached"
             break
 
-        emit_progress(
-            args,
-            "PaperSearchAgent",
-            "reflection start",
-            iteration=iteration,
-            reason=stop_reason,
-        )
         observation = _search_loop_observation(
             candidates=workflow_results,
             web_evidence=web_evidence,
             iteration_traces=iteration_traces,
         )
-        emit_progress(
-            args,
-            "PaperSearchAgent",
-            "reflection done",
-            iteration=iteration,
-            mode=reflection_trace.get("mode"),
-        )
-        next_plan, reflection_trace = await plan_next_paper_search_iteration(
-            question=question,
-            queries=queries,
-            research_plan=research_plan,
-            previous_plan=current_plan,
-            executed_tool_queries=executed_tool_queries,
-            observation=observation,
-            reason=stop_reason,
-            args=args,
-        )
+        if _paper_search_can_reflect(args):
+            stop_reason = "pasa_lite_reflection"
+            emit_progress(
+                args,
+                "PaperSearchAgent",
+                "reflection start",
+                iteration=iteration,
+                reason=stop_reason,
+            )
+            next_plan, reflection_trace = await plan_next_paper_search_iteration(
+                question=question,
+                queries=queries,
+                research_plan=research_plan,
+                previous_plan=current_plan,
+                executed_tool_queries=executed_tool_queries,
+                observation=observation,
+                reason=stop_reason,
+                args=args,
+            )
+            emit_progress(
+                args,
+                "PaperSearchAgent",
+                "reflection done",
+                iteration=iteration,
+                mode=reflection_trace.get("mode"),
+            )
+        else:
+            should_refine, stop_reason = _should_refine_paper_search(
+                candidates=workflow_results,
+                iteration=iteration,
+                max_iterations=max_iterations,
+                args=args,
+            )
+            if not should_refine:
+                break
+            emit_progress(
+                args,
+                "PaperSearchAgent",
+                "reflection skipped",
+                iteration=iteration,
+                reason=stop_reason,
+                mode="heuristic_no_llm",
+            )
+            next_plan, reflection_trace = await plan_next_paper_search_iteration(
+                question=question,
+                queries=queries,
+                research_plan=research_plan,
+                previous_plan=current_plan,
+                executed_tool_queries=executed_tool_queries,
+                observation=observation,
+                reason=stop_reason,
+                args=args,
+            )
+
         reflection_trace = {
             "after_iteration": iteration,
             "trigger": stop_reason,

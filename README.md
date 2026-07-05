@@ -36,6 +36,49 @@ data/
   paperqa_agent_runs/last/  # 每次 PaperQA reader 的本轮 PDF 目录
 ```
 
+## Metadata 数据说明
+
+当前 agent 运行时真正读取的是本地 SQLite metadata 数据库，而不是直接读取
+`data/metadata/*.jsonl`。JSONL 主要用于导出、备份、检查和发布到 Hugging Face。
+
+运行时的默认 metadata 来源如下：
+
+| 本地库 | 默认是否使用 | 对应 HF split | 用途 |
+|---|---:|---|---|
+| `data/db/topconf_papers.sqlite` | 是 | `topconf_all` | 顶会/会议论文主库，是默认 metadata search 的核心来源。 |
+| `data/db/frontier_papers.sqlite` | 网页默认开启；命令行需 `--include-frontier` | `frontier_2026_quality` | 2026 最新/热点/高质量信号论文库，用来补最新论文。 |
+| `data/db/papers_recent_3y.sqlite` | 否；需 `--include-arxiv` | `arxiv_recent_3y_score_gte_4` | 近三年 arXiv 相关论文补充库。 |
+| `data/db/papers.sqlite` | 当前主链路基本不用 | 不再发布 | 早期 arXiv 子集，主要是历史版本保留。 |
+
+也就是说，网页 demo 默认搜索：
+
+```text
+topconf_papers.sqlite + frontier_papers.sqlite
+```
+
+如果在网页左侧勾选“本地 arXiv 库”，或命令行加入 `--include-arxiv`，则额外搜索：
+
+```text
+papers_recent_3y.sqlite
+```
+
+Hugging Face Dataset 发布包位于 `data/hf_dataset/`，由下面命令生成：
+
+```bash
+python scripts/prepare_hf_metadata_dataset.py
+```
+
+发布包包含：
+
+- `data/topconf_all.jsonl`：`topconf_papers.sqlite` 的规范化导出版。
+- `data/frontier_2026_quality.jsonl`：`frontier_papers.sqlite` 的规范化导出版。
+- `data/arxiv_recent_3y_score_gte_4.jsonl`：`papers_recent_3y.sqlite` 的规范化导出版。
+- `data/all_curated.jsonl`：以上三个运行相关 split 的去重合集，方便别人下载后重建本地库或直接做检索预览。
+- `metadata_manifest.json`：每个 split 的数量、摘要覆盖率、PDF URL 覆盖率等统计。
+
+不再发布 `topconf_score_gte_4` 和旧版 `arxiv_score_gte_4` split，因为当前 agent
+不会直接读取它们；保留原始采集文件只是为了回溯和重新构建。
+
 ## 环境激活
 
 当前机器上项目使用 conda `base` 环境即可运行：
@@ -201,6 +244,7 @@ http://127.0.0.1:7860
 - `--answer-max-sources 6`：最终回答最多引用多少个来源。
 - `--synthesis-max-tokens 4096`：最终 `SynthesisAgent` 回答的 token 上限；如果长回答在中途截断，可以调大到 6000 或 8000。
 - `--llm-timeout 180`：每次 LiteLLM/中转站请求的超时时间，避免代理或 API 卡住后无限等待。
+- `--paper-search-log-json data/metadata/paper_search_logs/debug.json`：额外保存一份只包含 paper search / paper triage / PaperQA 摘要的调试 JSON，方便检查 query、平台返回和 triage 拒绝原因。不传时会自动写到 `data/metadata/paper_search_logs/last.json`，网页端会按每次 run id 生成独立文件。
 - `--quiet-workflow-progress`：关闭 LangGraph/agent 的实时进度日志。
 - `--thread-id default`：轻量 thread memory 的会话名；每个 thread 对应一个 JSONL 文件。
 - `--memory-dir data/memory`：thread memory 保存目录。
@@ -224,6 +268,29 @@ http://127.0.0.1:7860
 
 ```bash
 data/metadata/ask_literature_langgraph_last.json
+```
+
+Paper search 专用调试日志会保存到：
+
+```bash
+data/metadata/paper_search_logs/last.json
+```
+
+网页端每次请求会生成独立日志：
+
+```bash
+data/metadata/paper_search_logs/{run_id}.json
+```
+
+快速查看 Search/Triage 闭环反馈：
+
+```bash
+python - <<'PY'
+import json
+p = "data/metadata/paper_search_logs/last.json"
+s = json.load(open(p))
+print(json.dumps(s.get("paper_search_trace", {}).get("search_triage_loop", {}), ensure_ascii=False, indent=2))
+PY
 ```
 
 PaperQA 本轮 PDF 目录：

@@ -506,10 +506,6 @@ def _score_candidate(candidate: WebPaperCandidate, question: str, queries: list[
     if overlap:
         score += min(len(overlap) * 2.0, 10.0)
         reasons.append("query_text_overlap")
-    if "上海交通大学" in question and ("sjtu" in text or "shanghai jiao tong" in text):
-        score += 4.0
-        reasons.append("query_affiliation_overlap")
-
     if "openreview.net" in candidate.pdf_url:
         score += 4.0
         reasons.append("openreview_pdf")

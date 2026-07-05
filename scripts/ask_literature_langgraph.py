@@ -23,6 +23,7 @@ from scripts.ask_literature import (
 
 
 DEFAULT_LANGGRAPH_RUN_JSON = ROOT / "data/metadata/ask_literature_langgraph_last.json"
+DEFAULT_PAPER_SEARCH_LOG_DIR = ROOT / "data/metadata/paper_search_logs"
 
 
 def _selected_from_dicts(items: list[dict[str, Any]]) -> list[SelectedPaper]:
@@ -46,6 +47,67 @@ def write_langgraph_run(path: Path, state: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         json.dumps(state, ensure_ascii=False, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+
+
+def _default_paper_search_log_path(run_json: Path) -> Path:
+    stem = run_json.stem
+    if stem == DEFAULT_LANGGRAPH_RUN_JSON.stem:
+        return DEFAULT_PAPER_SEARCH_LOG_DIR / "last.json"
+    return DEFAULT_PAPER_SEARCH_LOG_DIR / f"{stem}.json"
+
+
+def write_paper_search_log(path: Path, state: dict[str, Any], args: Any) -> None:
+    """Write a focused retrieval/triage log separate from the full LangGraph state."""
+
+    expert_trace = state.get("expert_trace") or []
+    search_related_expert_trace = [
+        item
+        for item in expert_trace
+        if str(item.get("tool") or "") in {
+            "memory_paper_tool",
+            "web_search_agent",
+            "paper_search_agent",
+            "paper_triage_agent",
+            "paperqa_reader",
+        }
+    ]
+    payload = {
+        "question": state.get("question") or getattr(args, "question", ""),
+        "thread_id": getattr(args, "thread_id", None),
+        "run_json": str(args.run_json),
+        "route": state.get("route") or {},
+        "research_plan": state.get("research_plan") or [],
+        "paper_search_trace": state.get("paper_search_trace") or {},
+        "paper_triage_trace": state.get("paper_triage_trace") or {},
+        "academic_paper_search_trace": state.get("academic_paper_search_trace") or {},
+        "memory_paper_trace": state.get("memory_paper_trace") or {},
+        "web_search_trace": state.get("web_search_trace") or {},
+        "planning_web_trace": state.get("planning_web_trace") or {},
+        "paper_candidate_debug": state.get("paper_candidate_debug") or {},
+        "selected": state.get("selected") or [],
+        "expert_trace": search_related_expert_trace,
+        "paperqa_trace_summary": {
+            key: (state.get("paperqa_trace") or {}).get(key)
+            for key in [
+                "mode",
+                "adapter_mode",
+                "fallback_used",
+                "status",
+                "answer_mode",
+                "evidence_count",
+                "relevant_paper_count",
+                "sufficient",
+                "sufficiency_reason",
+                "fallback_reason",
+                "error",
+            ]
+        },
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True),
         encoding="utf-8",
     )
 
@@ -637,6 +699,13 @@ async def async_main() -> None:
 
     write_langgraph_run(args.run_json, dict(state))
     print(f"\nRun record: {args.run_json}")
+    paper_search_log_json = (
+        args.paper_search_log_json
+        if getattr(args, "paper_search_log_json", None)
+        else _default_paper_search_log_path(args.run_json)
+    )
+    write_paper_search_log(paper_search_log_json, dict(state), args)
+    print(f"Paper search log: {paper_search_log_json}")
 
 
 def main() -> None:

@@ -180,6 +180,15 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--run-json", type=Path, default=DEFAULT_RUN_JSON)
     parser.add_argument(
+        "--paper-search-log-json",
+        type=Path,
+        default=None,
+        help=(
+            "Write a focused JSON debug log for PaperSearchAgent/PaperTriageAgent. "
+            "If omitted, the LangGraph runner writes one under data/metadata/paper_search_logs/."
+        ),
+    )
+    parser.add_argument(
         "--thread-id",
         default=os.environ.get("LITERATURE_THREAD_ID", "default"),
         help="Thread/session id for lightweight local JSONL memory.",
@@ -587,8 +596,8 @@ def parse_args() -> argparse.Namespace:
         default=int(os.environ.get("PAPER_SEARCH_LOOP_ITERATIONS", "1")),
         help=(
             "Maximum internal PaperSearchAgent search-loop iterations. "
-            "The first iteration runs the initial search plan; later iterations "
-            "ask the LLM for targeted follow-up searches when candidates are weak."
+            "The outer PaperSearchAgent/PaperTriageAgent feedback loop usually "
+            "handles refinement, so the default internal loop is one search pass."
         ),
     )
     parser.add_argument(
@@ -604,9 +613,62 @@ def parse_args() -> argparse.Namespace:
         help="Minimum total online candidates before PaperSearchAgent stops refining.",
     )
     parser.add_argument(
+        "--academic-paper-request-timeout",
+        type=float,
+        default=float(os.environ.get("ACADEMIC_PAPER_REQUEST_TIMEOUT", "12")),
+        help=(
+            "Per-request timeout in seconds for academic connectors such as arXiv, "
+            "OpenAlex, OpenReview, and Crossref."
+        ),
+    )
+    parser.add_argument(
+        "--academic-paper-request-retries",
+        type=int,
+        default=int(os.environ.get("ACADEMIC_PAPER_REQUEST_RETRIES", "0")),
+        help=(
+            "Retry count for each academic connector HTTP request. Keep this low for "
+            "interactive web demos so one rate-limited source cannot block the run."
+        ),
+    )
+    parser.add_argument(
+        "--academic-paper-search-timeout",
+        type=float,
+        default=float(os.environ.get("ACADEMIC_PAPER_SEARCH_TIMEOUT", "75")),
+        help=(
+            "Overall timeout in seconds for the academic connector batch inside "
+            "PaperSearchAgent."
+        ),
+    )
+    parser.add_argument(
         "--disable-paper-search-loop",
         action="store_true",
         help="Disable iterative PaperSearchAgent refinement and run only the initial search plan.",
+    )
+    parser.add_argument(
+        "--disable-paper-search-reflection",
+        action="store_true",
+        help=(
+            "Disable the PaSa-lite LLM reflection step inside PaperSearchAgent. "
+            "When disabled, loop refinement falls back to simple candidate-count checks."
+        ),
+    )
+    parser.add_argument(
+        "--paper-search-triage-rounds",
+        type=int,
+        default=int(os.environ.get("PAPER_SEARCH_TRIAGE_ROUNDS", "2")),
+        help=(
+            "Maximum outer rounds of PaperSearchAgent -> PaperTriageAgent feedback. "
+            "If triage selects too few PDFs, its rationale is fed back to PaperSearchAgent."
+        ),
+    )
+    parser.add_argument(
+        "--paper-search-triage-min-selected",
+        type=int,
+        default=int(os.environ.get("PAPER_SEARCH_TRIAGE_MIN_SELECTED", "1")),
+        help=(
+            "Minimum number of PDFs PaperTriageAgent must select before the "
+            "PaperSearchAgent/Triage feedback loop stops."
+        ),
     )
     parser.add_argument(
         "--disable-metadata-paper-search",

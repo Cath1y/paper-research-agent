@@ -9,7 +9,7 @@ import time
 import urllib.error
 import urllib.request
 import urllib.parse
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from textwrap import shorten
@@ -53,6 +53,9 @@ class AcademicSearchConfig:
     year_to: int | None = None
     resolve_pdf: bool = True
     request_delay: float = 1.5
+    request_timeout: float = 12.0
+    request_retries: int = 0
+    search_timeout: float = 75.0
     max_workers: int = 2
 
 
@@ -174,29 +177,57 @@ def search_papers(
                     time.sleep(wait)
                 last_request_at[source_name] = time.monotonic()
         searcher = source_map[source_name]
-        kwargs: dict[str, object] = {}
+        kwargs: dict[str, object] = {
+            "timeout": config.request_timeout,
+            "retries": config.request_retries,
+            "request_delay": config.request_delay,
+        }
         return searcher.search(query, max_results=config.results_per_source, **kwargs)
 
-    with ThreadPoolExecutor(max_workers=max(1, min(len(jobs), config.max_workers))) as pool:
+    pool = ThreadPoolExecutor(max_workers=max(1, min(len(jobs), config.max_workers)))
+    try:
         future_map = {
             pool.submit(run_job, query, source, index): (query, source)
             for query, source, index in jobs
         }
-        for future in as_completed(future_map):
-            query, source = future_map[future]
-            try:
-                papers = future.result()
-            except Exception as exc:
+        try:
+            for future in as_completed(future_map, timeout=max(config.search_timeout, 1.0)):
+                query, source = future_map[future]
+                try:
+                    papers = future.result()
+                except Exception as exc:
+                    errors.append(
+                        {
+                            "query": query,
+                            "source": source,
+                            "error": shorten(str(exc), width=240, placeholder="..."),
+                        }
+                    )
+                    continue
+                source_results[source] = source_results.get(source, 0) + len(papers)
+                raw.extend(papers)
+        except FuturesTimeoutError:
+            unfinished = [future_map[future] for future in future_map if not future.done()]
+            errors.append(
+                {
+                    "query": "*",
+                    "source": "academic_connectors",
+                    "error": (
+                        f"academic search timed out after {config.search_timeout:.1f}s; "
+                        f"unfinished={len(unfinished)}"
+                    ),
+                }
+            )
+            for query, source in unfinished[:10]:
                 errors.append(
                     {
                         "query": query,
                         "source": source,
-                        "error": shorten(str(exc), width=240, placeholder="..."),
+                        "error": "cancelled after academic search timeout",
                     }
                 )
-                continue
-            source_results[source] = source_results.get(source, 0) + len(papers)
-            raw.extend(papers)
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
 
     deduped: dict[str, AcademicPaper] = {}
     for paper in raw:
@@ -216,6 +247,9 @@ def search_papers(
         "query_count": len(jobs),
         "request_delay": config.request_delay,
         "request_delay_mode": "per_source_min_interval",
+        "request_timeout": config.request_timeout,
+        "request_retries": config.request_retries,
+        "search_timeout": config.search_timeout,
         "max_workers": config.max_workers,
         "source_results": source_results,
         "raw_total": len(raw),
@@ -506,6 +540,9 @@ def _config_from_args(args: Any) -> AcademicSearchConfig:
             )
             or 0.0
         ),
+        request_timeout=float(getattr(args, "academic_paper_request_timeout", 12.0) or 12.0),
+        request_retries=int(getattr(args, "academic_paper_request_retries", 0) or 0),
+        search_timeout=float(getattr(args, "academic_paper_search_timeout", 75.0) or 75.0),
         max_workers=int(getattr(args, "academic_paper_max_workers", 2) or 2),
     )
 

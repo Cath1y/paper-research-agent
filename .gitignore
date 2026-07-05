@@ -36,6 +36,7 @@ temp/
 # Project runtime data
 data/cache/
 data/db/
+data/hf_dataset/
 data/pdf_cache/
 data/paperqa_agent_runs/
 data/metadata/web_runs/

@@ -611,7 +611,11 @@ async def triage_papers_for_reading(
                         "If fewer than top_k papers are clearly tied to the target person/team, select fewer. "
                         "For topic questions, choose papers that jointly cover the user's requested angles. "
                         "It is acceptable to return fewer than the requested number, or zero, if the "
-                        "candidate list is not relevant enough. Return compact JSON only. "
+                        "candidate list is not relevant enough. Set sufficient_for_reading=true when "
+                        "the selected PDFs are enough for a useful PaperQA reading pass; do not be "
+                        "perfectionist. Set requires_followup_search=true when the current candidate "
+                        "set is too weak, ambiguous, or missing important requested coverage. "
+                        "Return compact JSON only. "
                         "Do not write a rejection reason for every candidate; include at most 10 "
                         "representative rejected_reasons entries for important or ambiguous cases."
                     ),
@@ -629,6 +633,8 @@ async def triage_papers_for_reading(
                         "{\n"
                         '  "selected": ["P001", "P005"],\n'
                         '  "reject_all_if_needed": false,\n'
+                        '  "sufficient_for_reading": true,\n'
+                        '  "requires_followup_search": false,\n'
                         '  "rationale": "short reason",\n'
                         '  "coverage_notes": ["what is covered", "what is missing"],\n'
                         '  "rejected_reasons": {"P002": "not about target author"}\n'
@@ -692,6 +698,14 @@ async def triage_papers_for_reading(
             "selected_count": len(selected),
             "selected_keys": selected_keys,
             "selected_titles": [item.result.title for item in selected],
+            "sufficient_for_reading": _coerce_bool(
+                payload.get("sufficient_for_reading"),
+                default=bool(selected),
+            ),
+            "requires_followup_search": _coerce_bool(
+                payload.get("requires_followup_search"),
+                default=not bool(selected),
+            ),
             "rationale": payload.get("rationale"),
             "coverage_notes": payload.get("coverage_notes") or [],
             "rejected_reasons": payload.get("rejected_reasons") or {},
