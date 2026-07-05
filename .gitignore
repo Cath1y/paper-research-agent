@@ -44,6 +44,8 @@ data/metadata/*_last.json
 data/metadata/chat_literature_last.json
 data/metadata/ask_literature_last.json
 data/metadata/ask_literature_langgraph_last.json
+mini_arxiv_qa/cache/
+mini_arxiv_qa/runs/
 
 # Large/generated metadata dumps
 data/metadata/*.jsonl
